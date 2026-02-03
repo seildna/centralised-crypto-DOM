@@ -28,6 +28,7 @@ type Config struct {
 	SingleExchange      bool
 	ValueMode           string
 	ValueDecimals       int
+	SnapshotFile        string
 }
 
 func Load() Config {
@@ -54,6 +55,7 @@ func Load() Config {
 		SingleExchange:      boolOrDefault(os.Getenv("DOM_SINGLE_EXCHANGE"), true),
 		ValueMode:           stringOrDefault(os.Getenv("DOM_VALUE_MODE"), "size"),
 		ValueDecimals:       intOrDefault(os.Getenv("DOM_VALUE_DECIMALS"), 2),
+		SnapshotFile:        stringOrDefault(os.Getenv("DOM_SNAPSHOT_FILE"), "/tmp/dom_snapshot.txt"),
 	}
 }
 

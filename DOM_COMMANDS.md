@@ -88,6 +88,10 @@ Validation:
 - `DOM_VALIDATE_SUM` (default: `false`)  
   Validates master book equals sum of per-exchange books (logs errors if mismatch).
 
+Output file:
+- `DOM_SNAPSHOT_FILE` (default: `/tmp/dom_snapshot.txt`)  
+  Writes the latest DOM table to a file each render. File is truncated on start and overwritten every render.
+
 Exchange-specific:
 - `DOM_HL_NSIGFIGS` (default: `0`)  
   Hyperliquid price formatting control (optional).

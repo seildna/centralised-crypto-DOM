@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"math/big"
+	"os"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ type Runner struct {
 	adapters []exchange.Adapter
 	master   *dom.Master
 	primary  string
+	outFile  string
 }
 
 const baseMul = int64(100_000_000)
@@ -36,6 +38,7 @@ func (r *Runner) Start(ctx context.Context) error {
 	applyTicks(r.master, r.cfg)
 	r.adapters = r.buildAdapters()
 	r.startRenderer(ctx)
+	r.initSnapshotFile()
 	for _, a := range r.adapters {
 		if r.primary == "" {
 			r.primary = a.Name()
@@ -203,6 +206,7 @@ func (r *Runner) render() {
 	}
 	log.Printf("EXCHANGE DOM %s (%s) step=%s levels=%d", sym, exName, step, r.cfg.GroupLevels)
 	log.Printf("PRICE | BID | ASK | DELTA | BUY | SELL | VOL")
+	r.writeSnapshot(sym, exName, step, rows)
 	for _, row := range rows {
 		price := formatPrice(row, r.cfg.PriceDecimals)
 		bid := r.formatValue(row, row.BidSize)
@@ -226,6 +230,69 @@ func (r *Runner) render() {
 
 func clearScreen() {
 	print("\033[H\033[2J")
+}
+
+func (r *Runner) initSnapshotFile() {
+	path := strings.TrimSpace(r.cfg.SnapshotFile)
+	if path == "" {
+		return
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		log.Printf("snapshot file init error: %v", err)
+		return
+	}
+	_ = file.Close()
+	r.outFile = path
+}
+
+func (r *Runner) writeSnapshot(sym, exName, step string, rows []dom.BandRow) {
+	if r.outFile == "" {
+		return
+	}
+	file, err := os.Create(r.outFile)
+	if err != nil {
+		log.Printf("snapshot file write error: %v", err)
+		return
+	}
+	defer file.Close()
+
+	_, _ = file.WriteString("EXCHANGE DOM " + sym + " (" + exName + ") step=" + step + " levels=" + itoa(r.cfg.GroupLevels) + "\n")
+	_, _ = file.WriteString("PRICE | BID | ASK | DELTA | BUY | SELL | VOL\n")
+	for _, row := range rows {
+		price := formatPrice(row, r.cfg.PriceDecimals)
+		bid := r.formatValue(row, row.BidSize)
+		ask := r.formatValue(row, row.AskSize)
+		delta := r.formatSumValue(row, row.BidDelta, row.AskDelta)
+		buy := r.formatValue(row, row.BuyVol)
+		sell := r.formatValue(row, row.SellVol)
+		vol := r.formatSumValue(row, row.BuyVol, row.SellVol)
+		line := price + " | " + bid + " | " + ask + " | " + delta + " | " + buy + " | " + sell + " | " + vol + "\n"
+		_, _ = file.WriteString(line)
+	}
+}
+
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	buf := make([]byte, 0, 12)
+	for v > 0 {
+		d := v % 10
+		buf = append(buf, byte('0'+d))
+		v /= 10
+	}
+	if neg {
+		buf = append(buf, '-')
+	}
+	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
+		buf[i], buf[j] = buf[j], buf[i]
+	}
+	return string(buf)
 }
 
 func applyTicks(master *dom.Master, cfg config.Config) {
