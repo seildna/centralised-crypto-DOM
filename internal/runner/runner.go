@@ -81,6 +81,13 @@ func (r *Runner) consumeAdapter(ctx context.Context, a exchange.Adapter) {
 				if r.master != nil {
 					_ = r.master.ApplyUpdate(upd)
 				}
+			case tr, ok := <-a.Trades():
+				if !ok {
+					return
+				}
+				if r.master != nil {
+					r.master.ApplyTrade(tr.Exchange, tr.Symbol, tr.Price, tr.Size, tr.TakerBuy)
+				}
 			case err, ok := <-a.Errors():
 				if !ok {
 					return

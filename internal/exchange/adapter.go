@@ -13,6 +13,7 @@ type Adapter interface {
 	Subscribe(ctx context.Context, symbols []string) error
 	FetchSnapshot(ctx context.Context, symbol string) error
 	Updates() <-chan schema.L2Update
+	Trades() <-chan schema.TradeUpdate
 	Errors() <-chan error
 	Close() error
 }

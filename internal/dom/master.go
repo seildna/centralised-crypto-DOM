@@ -566,16 +566,7 @@ func (m *Master) anchorPriceLocked(agg *symbolAgg, groupStepTicks int64) int64 {
 	if agg.lastTrade > 0 {
 		return snapTick(agg.lastTrade, groupStepTicks)
 	}
-	if len(agg.bids) == 0 || len(agg.asks) == 0 {
-		return 0
-	}
-	bestBid := maxKey(agg.bids)
-	bestAsk := minKey(agg.asks)
-	if bestBid == 0 || bestAsk == 0 {
-		return 0
-	}
-	mid := (bestBid + bestAsk) / 2
-	return snapTick(mid, groupStepTicks)
+	return 0
 }
 
 func (m *Master) bucketAllLocked(agg *symbolAgg, step int64) bandTotals {

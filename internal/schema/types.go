@@ -18,3 +18,13 @@ type PriceLevel struct {
 	Size  string
 	Count int64
 }
+
+type TradeUpdate struct {
+	Exchange  string
+	Symbol    string
+	Timestamp int64
+	RecvTime  int64
+	Price     string
+	Size      string
+	TakerBuy  bool
+}

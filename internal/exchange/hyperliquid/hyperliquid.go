@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ type Adapter struct {
 	symbols  []string
 	updates  chan schema.L2Update
 	errs     chan error
+	trades   chan schema.TradeUpdate
 	ws       *websocket.Conn
 	writeMu  sync.Mutex
 	nSigFigs int
@@ -28,6 +30,7 @@ func New(symbols []string, nSigFigs, mantissa int) *Adapter {
 		symbols:  symbols,
 		updates:  make(chan schema.L2Update, 256),
 		errs:     make(chan error, 16),
+		trades:   make(chan schema.TradeUpdate, 256),
 		nSigFigs: nSigFigs,
 		mantissa: mantissa,
 	}
@@ -70,6 +73,16 @@ func (a *Adapter) Subscribe(ctx context.Context, symbols []string) error {
 		if err := a.writeJSON(msg); err != nil {
 			return err
 		}
+		trades := map[string]any{
+			"method": "subscribe",
+			"subscription": map[string]any{
+				"type": "trades",
+				"coin": sym,
+			},
+		}
+		if err := a.writeJSON(trades); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -79,8 +92,9 @@ func (a *Adapter) FetchSnapshot(ctx context.Context, symbol string) error {
 	return nil
 }
 
-func (a *Adapter) Updates() <-chan schema.L2Update { return a.updates }
-func (a *Adapter) Errors() <-chan error            { return a.errs }
+func (a *Adapter) Updates() <-chan schema.L2Update   { return a.updates }
+func (a *Adapter) Errors() <-chan error              { return a.errs }
+func (a *Adapter) Trades() <-chan schema.TradeUpdate { return a.trades }
 
 func (a *Adapter) Close() error {
 	if a.ws != nil {
@@ -88,6 +102,7 @@ func (a *Adapter) Close() error {
 	}
 	close(a.updates)
 	close(a.errs)
+	close(a.trades)
 	return nil
 }
 
@@ -134,33 +149,95 @@ func (a *Adapter) readLoop(ctx context.Context) {
 			continue
 		}
 
-		if env.Channel != "l2Book" {
+		switch env.Channel {
+		case "l2Book":
+			var book wsBook
+			if err := json.Unmarshal(env.Data, &book); err != nil {
+				a.pushErr(fmt.Errorf("decode book: %w", err))
+				continue
+			}
+
+			recv := time.Now().UnixMilli()
+			update := schema.L2Update{
+				Exchange:   a.Name(),
+				Symbol:     book.Coin,
+				Timestamp:  book.Time,
+				RecvTime:   recv,
+				IsSnapshot: true,
+				DepthCap:   20,
+				Bids:       levelsToPriceLevels(book.Levels, 0),
+				Asks:       levelsToPriceLevels(book.Levels, 1),
+			}
+
+			select {
+			case a.updates <- update:
+			case <-ctx.Done():
+				return
+			}
+		case "trades":
+			a.handleTrades(ctx, env.Data)
+		default:
 			continue
 		}
+	}
+}
 
-		var book wsBook
-		if err := json.Unmarshal(env.Data, &book); err != nil {
-			a.pushErr(fmt.Errorf("decode book: %w", err))
-			continue
-		}
+type wsTrade struct {
+	Coin string `json:"coin"`
+	Px   string `json:"px"`
+	Sz   string `json:"sz"`
+	Side string `json:"side"`
+	Time int64  `json:"time"`
+}
 
-		recv := time.Now().UnixMilli()
-		update := schema.L2Update{
-			Exchange:   a.Name(),
-			Symbol:     book.Coin,
-			Timestamp:  book.Time,
-			RecvTime:   recv,
-			IsSnapshot: true,
-			DepthCap:   20,
-			Bids:       levelsToPriceLevels(book.Levels, 0),
-			Asks:       levelsToPriceLevels(book.Levels, 1),
-		}
+type wsTradesWrap struct {
+	Coin   string    `json:"coin"`
+	Trades []wsTrade `json:"trades"`
+}
 
-		select {
-		case a.updates <- update:
-		case <-ctx.Done():
-			return
+func (a *Adapter) handleTrades(ctx context.Context, raw json.RawMessage) {
+	var trades []wsTrade
+	if err := json.Unmarshal(raw, &trades); err == nil && len(trades) > 0 {
+		for _, tr := range trades {
+			a.emitTrade(ctx, tr, tr.Coin)
 		}
+		return
+	}
+
+	var wrap wsTradesWrap
+	if err := json.Unmarshal(raw, &wrap); err == nil && len(wrap.Trades) > 0 {
+		for _, tr := range wrap.Trades {
+			coin := tr.Coin
+			if coin == "" {
+				coin = wrap.Coin
+			}
+			a.emitTrade(ctx, tr, coin)
+		}
+	}
+}
+
+func (a *Adapter) emitTrade(ctx context.Context, tr wsTrade, coin string) {
+	if coin == "" || tr.Px == "" || tr.Sz == "" {
+		return
+	}
+	now := time.Now().UnixMilli()
+	ts := tr.Time
+	if ts == 0 {
+		ts = now
+	}
+	update := schema.TradeUpdate{
+		Exchange:  a.Name(),
+		Symbol:    coin,
+		Timestamp: ts,
+		RecvTime:  now,
+		Price:     tr.Px,
+		Size:      tr.Sz,
+		TakerBuy:  strings.ToLower(tr.Side) == "buy",
+	}
+	select {
+	case a.trades <- update:
+	case <-ctx.Done():
+		return
 	}
 }
 
