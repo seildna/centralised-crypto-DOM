@@ -21,19 +21,15 @@ type Master struct {
 }
 
 type symbolAgg struct {
-	perEx       map[string]*exchangeBook
-	bids        map[int64]int64
-	asks        map[int64]int64
-	deltaBids   map[int64]int64
-	deltaAsks   map[int64]int64
-	cancelBids  map[int64]int64
-	cancelAsks  map[int64]int64
-	buyVol      map[int64]int64
-	sellVol     map[int64]int64
-	topTrades   map[int64][]int64
-	lastTrade   int64
-	lastUpdate  time.Time
-	negResidues int
+	perEx      map[string]*exchangeBook
+	bids       map[int64]int64
+	asks       map[int64]int64
+	deltaBids  map[int64]int64
+	deltaAsks  map[int64]int64
+	buyVol     map[int64]int64
+	sellVol    map[int64]int64
+	lastTrade  int64
+	lastUpdate time.Time
 }
 
 type exchangeBook struct {
@@ -149,21 +145,15 @@ type BandRow struct {
 	AskDelta   string
 	BuyVol     string
 	SellVol    string
-	BidCancel  string
-	AskCancel  string
-	TopTrades  []string
 }
 
 type bandTotals struct {
-	bidSize   map[int64]int64
-	askSize   map[int64]int64
-	bidDelta  map[int64]int64
-	askDelta  map[int64]int64
-	buyVol    map[int64]int64
-	sellVol   map[int64]int64
-	bidCancel map[int64]int64
-	askCancel map[int64]int64
-	trades    map[int64][]int64
+	bidSize  map[int64]int64
+	askSize  map[int64]int64
+	bidDelta map[int64]int64
+	askDelta map[int64]int64
+	buyVol   map[int64]int64
+	sellVol  map[int64]int64
 }
 
 func (m *Master) GroupedView(sym string, groupStepTicks int64, levels int) (bids, asks []GroupLevel) {
@@ -246,10 +236,9 @@ func (m *Master) CenteredBands(sym string, groupStepTicks int64, levels int) []B
 }
 
 type Stats struct {
-	BidLevels   int
-	AskLevels   int
-	LastUpdate  time.Time
-	NegResidues int
+	BidLevels  int
+	AskLevels  int
+	LastUpdate time.Time
 }
 
 func (m *Master) Stats(sym string) Stats {
@@ -260,10 +249,9 @@ func (m *Master) Stats(sym string) Stats {
 		return Stats{}
 	}
 	return Stats{
-		BidLevels:   len(agg.bids),
-		AskLevels:   len(agg.asks),
-		LastUpdate:  agg.lastUpdate,
-		NegResidues: agg.negResidues,
+		BidLevels:  len(agg.bids),
+		AskLevels:  len(agg.asks),
+		LastUpdate: agg.lastUpdate,
 	}
 }
 
@@ -352,16 +340,13 @@ func (m *Master) ensureSymbol(sym string) *symbolAgg {
 	agg, ok := m.perSym[sym]
 	if !ok {
 		agg = &symbolAgg{
-			perEx:      make(map[string]*exchangeBook),
-			bids:       make(map[int64]int64),
-			asks:       make(map[int64]int64),
-			deltaBids:  make(map[int64]int64),
-			deltaAsks:  make(map[int64]int64),
-			cancelBids: make(map[int64]int64),
-			cancelAsks: make(map[int64]int64),
-			buyVol:     make(map[int64]int64),
-			sellVol:    make(map[int64]int64),
-			topTrades:  make(map[int64][]int64),
+			perEx:     make(map[string]*exchangeBook),
+			bids:      make(map[int64]int64),
+			asks:      make(map[int64]int64),
+			deltaBids: make(map[int64]int64),
+			deltaAsks: make(map[int64]int64),
+			buyVol:    make(map[int64]int64),
+			sellVol:   make(map[int64]int64),
 		}
 		m.perSym[sym] = agg
 	}
@@ -422,29 +407,12 @@ func applyAggDelta(master map[int64]int64, deltaMap map[int64]int64, price, delt
 		if cur != 0 {
 			deltaApplied := -cur
 			deltaMap[price] += deltaApplied
-			if deltaApplied < 0 {
-				if isBid {
-					agg.cancelBids[price] += -deltaApplied
-				} else {
-					agg.cancelAsks[price] += -deltaApplied
-				}
-			}
 			delete(master, price)
-		}
-		if next < 0 {
-			agg.negResidues++
 		}
 		return
 	}
 	master[price] = next
 	deltaMap[price] += delta
-	if delta < 0 {
-		if isBid {
-			agg.cancelBids[price] += -delta
-		} else {
-			agg.cancelAsks[price] += -delta
-		}
-	}
 }
 
 func levelsToMap(levels []schema.PriceLevel, priceMul, sizeMul, priceTick, sizeTick int64) map[int64]int64 {
@@ -592,16 +560,6 @@ func (m *Master) ApplyTrade(exchange, symbol, price, size string, takerBuy bool)
 	} else {
 		agg.sellVol[p] += sz
 	}
-	agg.topTrades[p] = addTopTrade(agg.topTrades[p], sz)
-}
-
-func (m *Master) RecordCancel(symbol string, price int64, size int64, isBid bool) {
-	agg := m.ensureSymbol(symbol)
-	if isBid {
-		agg.cancelBids[price] += size
-		return
-	}
-	agg.cancelAsks[price] += size
 }
 
 func (m *Master) anchorPriceLocked(agg *symbolAgg, groupStepTicks int64) int64 {
@@ -622,15 +580,12 @@ func (m *Master) anchorPriceLocked(agg *symbolAgg, groupStepTicks int64) int64 {
 
 func (m *Master) bucketAllLocked(agg *symbolAgg, step int64) bandTotals {
 	out := bandTotals{
-		bidSize:   make(map[int64]int64),
-		askSize:   make(map[int64]int64),
-		bidDelta:  make(map[int64]int64),
-		askDelta:  make(map[int64]int64),
-		buyVol:    make(map[int64]int64),
-		sellVol:   make(map[int64]int64),
-		bidCancel: make(map[int64]int64),
-		askCancel: make(map[int64]int64),
-		trades:    make(map[int64][]int64),
+		bidSize:  make(map[int64]int64),
+		askSize:  make(map[int64]int64),
+		bidDelta: make(map[int64]int64),
+		askDelta: make(map[int64]int64),
+		buyVol:   make(map[int64]int64),
+		sellVol:  make(map[int64]int64),
 	}
 	for price, size := range agg.bids {
 		bucket := bucketPrice(price, step, true)
@@ -656,27 +611,10 @@ func (m *Master) bucketAllLocked(agg *symbolAgg, step int64) bandTotals {
 		bucket := bucketPrice(price, step, false)
 		out.sellVol[bucket] += vol
 	}
-	for price, vol := range agg.cancelBids {
-		bucket := bucketPrice(price, step, true)
-		out.bidCancel[bucket] += vol
-	}
-	for price, vol := range agg.cancelAsks {
-		bucket := bucketPrice(price, step, false)
-		out.askCancel[bucket] += vol
-	}
-	for price, list := range agg.topTrades {
-		bucket := bucketPrice(price, step, true)
-		out.trades[bucket] = mergeTopTrades(out.trades[bucket], list)
-	}
 	return out
 }
 
 func (m *Master) makeBandRow(price int64, totals bandTotals) BandRow {
-	trades := totals.trades[price]
-	tradeStrs := make([]string, 0, len(trades))
-	for _, sz := range trades {
-		tradeStrs = append(tradeStrs, formatFixed(sz, m.sizeMul))
-	}
 	return BandRow{
 		PriceTicks: price,
 		Price:      formatFixed(price, m.priceMul),
@@ -686,43 +624,14 @@ func (m *Master) makeBandRow(price int64, totals bandTotals) BandRow {
 		AskDelta:   formatFixed(totals.askDelta[price], m.sizeMul),
 		BuyVol:     formatFixed(totals.buyVol[price], m.sizeMul),
 		SellVol:    formatFixed(totals.sellVol[price], m.sizeMul),
-		BidCancel:  formatFixed(totals.bidCancel[price], m.sizeMul),
-		AskCancel:  formatFixed(totals.askCancel[price], m.sizeMul),
-		TopTrades:  tradeStrs,
 	}
 }
 
 func (m *Master) resetAccumulatorsLocked(agg *symbolAgg) {
 	agg.deltaBids = make(map[int64]int64)
 	agg.deltaAsks = make(map[int64]int64)
-	agg.cancelBids = make(map[int64]int64)
-	agg.cancelAsks = make(map[int64]int64)
 	agg.buyVol = make(map[int64]int64)
 	agg.sellVol = make(map[int64]int64)
-}
-
-func addTopTrade(list []int64, size int64) []int64 {
-	if size <= 0 {
-		return list
-	}
-	list = append(list, size)
-	for i := len(list) - 1; i > 0; i-- {
-		if list[i] > list[i-1] {
-			list[i], list[i-1] = list[i-1], list[i]
-		}
-	}
-	if len(list) > 5 {
-		list = list[:5]
-	}
-	return list
-}
-
-func mergeTopTrades(a []int64, b []int64) []int64 {
-	out := append([]int64{}, a...)
-	for _, v := range b {
-		out = addTopTrade(out, v)
-	}
-	return out
 }
 
 func digits(v int64) int {

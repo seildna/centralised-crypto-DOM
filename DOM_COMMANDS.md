@@ -100,29 +100,26 @@ Exchange-specific:
 
 Header:
 ```
-EXCHANGE DOM BTC (binance) step=1 levels=10 bids=165 asks=172 last=120ms neg=0
-REF bookTicker=95451.00 domMid=95450.50 diff=0.50 (0.05bps)
-PRICE | BID | ASK | dBid | dAsk | Buy | Sell | cBid | cAsk | Top5
+EXCHANGE DOM BTC (binance) step=1 levels=10
+PRICE | BID | ASK | DELTA | BUY | SELL | VOL
 ```
 
 Row example:
 ```
-95451.00 | 3.01905 | 7.28615 | 0.50000 | -0.20000 | 0.00000 | 0.00000 | 0.20000 | 0.00000 | 2.00000,1.50000
+95451.00 | 3.01905 | 7.28615 | 0.30000 | 0.00000 | 0.00000 | 0.00000
 ```
 
 USD notional example (with `DOM_VALUE_MODE=usd`):
 ```
-95451.00 | 288237.89 | 695585.40 | 47725.50 | -19090.20 | 0.00 | 0.00 | 19090.20 | 0.00 | 190902.00,143176.50
+95451.00 | 288237.89 | 695585.40 | 28622.99 | 0.00 | 0.00 | 0.00
 ```
 
 Field meanings:
 - `PRICE` = price band center (grouped by `DOM_GROUP_STEP`).
 - `BID` / `ASK` = aggregated size at that band (or USD notional when `DOM_VALUE_MODE=usd`).
-- `dBid` / `dAsk` = delta since last render (size or USD).
-- `Buy` / `Sell` = trade volume per band (size or USD).
-- `cBid` / `cAsk` = cancel volume per band (size or USD).
-- `Top5` = top 5 trade sizes per band (size or USD).
-- `REF` line compares exchange reference price vs DOM mid; a large diff indicates drift.
+- `DELTA` = bid delta + ask delta since last render (size or USD).
+- `BUY` / `SELL` = trade volume per band (size or USD).
+- `VOL` = buy + sell volume per band (size or USD).
 
 ---
 

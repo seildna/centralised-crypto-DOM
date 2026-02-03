@@ -19,7 +19,6 @@ import (
 type Adapter struct {
 	symbols []string
 	updates chan schema.L2Update
-	prices  chan schema.PriceUpdate
 	errs    chan error
 	ws      *websocket.Conn
 	writeMu sync.Mutex
@@ -32,7 +31,6 @@ func New(symbols []string) *Adapter {
 	return &Adapter{
 		symbols: symbols,
 		updates: make(chan schema.L2Update, 256),
-		prices:  make(chan schema.PriceUpdate, 256),
 		errs:    make(chan error, 16),
 		state:   make(map[string]*bookState),
 	}
@@ -60,7 +58,6 @@ func (a *Adapter) Subscribe(ctx context.Context, symbols []string) error {
 	params := make([]string, 0, len(symbols))
 	for _, sym := range symbols {
 		params = append(params, binanceStreamName(sym))
-		params = append(params, binanceBookTickerStreamName(sym))
 	}
 	req := map[string]any{
 		"method": "SUBSCRIBE",
@@ -123,16 +120,14 @@ func (a *Adapter) FetchSnapshot(ctx context.Context, symbol string) error {
 	return nil
 }
 
-func (a *Adapter) Updates() <-chan schema.L2Update   { return a.updates }
-func (a *Adapter) Prices() <-chan schema.PriceUpdate { return a.prices }
-func (a *Adapter) Errors() <-chan error              { return a.errs }
+func (a *Adapter) Updates() <-chan schema.L2Update { return a.updates }
+func (a *Adapter) Errors() <-chan error            { return a.errs }
 
 func (a *Adapter) Close() error {
 	if a.ws != nil {
 		_ = a.ws.Close()
 	}
 	close(a.updates)
-	close(a.prices)
 	close(a.errs)
 	return nil
 }
@@ -156,17 +151,6 @@ type depthSnapshot struct {
 type streamEnvelope struct {
 	Stream string          `json:"stream"`
 	Data   json.RawMessage `json:"data"`
-}
-
-type bookTicker struct {
-	EventType string `json:"e"`
-	EventTime int64  `json:"E"`
-	UpdateID  int64  `json:"u"`
-	Symbol    string `json:"s"`
-	BidPrice  string `json:"b"`
-	BidQty    string `json:"B"`
-	AskPrice  string `json:"a"`
-	AskQty    string `json:"A"`
 }
 
 type bookState struct {
@@ -195,28 +179,24 @@ func (a *Adapter) readLoop(ctx context.Context) {
 
 		var env streamEnvelope
 		if err := json.Unmarshal(msg, &env); err == nil && env.Stream != "" {
-			a.handleMessage(ctx, env.Data)
+			a.handleDepthMsg(ctx, env.Data)
 			continue
 		}
 
-		a.handleMessage(ctx, msg)
+		a.handleDepthMsg(ctx, msg)
 	}
 }
 
-func (a *Adapter) handleMessage(ctx context.Context, raw []byte) {
+func (a *Adapter) handleDepthMsg(ctx context.Context, raw []byte) {
 	var ev depthUpdate
-	if err := json.Unmarshal(raw, &ev); err == nil && ev.EventType == "depthUpdate" {
-		a.handleDepthUpdate(ctx, ev)
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		a.pushErr(fmt.Errorf("decode depth: %w", err))
+		return
+	}
+	if ev.EventType != "depthUpdate" {
 		return
 	}
 
-	var tick bookTicker
-	if err := json.Unmarshal(raw, &tick); err == nil && tick.Symbol != "" && (tick.BidPrice != "" || tick.AskPrice != "") {
-		a.emitPrice(ctx, tick)
-	}
-}
-
-func (a *Adapter) handleDepthUpdate(ctx context.Context, ev depthUpdate) {
 	symbol := fromBinanceSymbol(ev.Symbol)
 
 	a.stateMu.Lock()
@@ -324,29 +304,6 @@ func (a *Adapter) emitUpdate(ctx context.Context, upd schema.L2Update) {
 	}
 }
 
-func (a *Adapter) emitPrice(ctx context.Context, tick bookTicker) {
-	now := time.Now().UnixMilli()
-	ts := tick.EventTime
-	if ts == 0 {
-		ts = now
-	}
-	symbol := fromBinanceSymbol(tick.Symbol)
-	upd := schema.PriceUpdate{
-		Exchange:  a.Name(),
-		Symbol:    symbol,
-		Timestamp: ts,
-		RecvTime:  now,
-		Bid:       tick.BidPrice,
-		Ask:       tick.AskPrice,
-		Source:    "bookTicker",
-	}
-	select {
-	case a.prices <- upd:
-	case <-ctx.Done():
-		return
-	}
-}
-
 func (a *Adapter) ensureState(symbol string) *bookState {
 	st, ok := a.state[symbol]
 	if !ok {
@@ -429,10 +386,6 @@ func fromBinanceSymbol(sym string) string {
 
 func binanceStreamName(symbol string) string {
 	return strings.ToLower(binanceSymbol(symbol)) + "@depth@100ms"
-}
-
-func binanceBookTickerStreamName(symbol string) string {
-	return strings.ToLower(binanceSymbol(symbol)) + "@bookTicker"
 }
 
 func isSubAck(msg []byte) bool {

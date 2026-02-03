@@ -2,11 +2,9 @@ package runner
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"math/big"
 	"strings"
-	"sync"
 	"time"
 
 	"dom/internal/config"
@@ -25,8 +23,6 @@ type Runner struct {
 	adapters []exchange.Adapter
 	master   *dom.Master
 	primary  string
-	pricesMu sync.Mutex
-	prices   map[string]schema.PriceUpdate
 }
 
 const baseMul = int64(100_000_000)
@@ -39,7 +35,6 @@ func (r *Runner) Start(ctx context.Context) error {
 	r.master = dom.NewMaster(baseMul, baseMul)
 	applyTicks(r.master, r.cfg)
 	r.adapters = r.buildAdapters()
-	r.prices = make(map[string]schema.PriceUpdate)
 	r.startRenderer(ctx)
 	for _, a := range r.adapters {
 		if r.primary == "" {
@@ -86,11 +81,6 @@ func (r *Runner) consumeAdapter(ctx context.Context, a exchange.Adapter) {
 				if r.master != nil {
 					_ = r.master.ApplyUpdate(upd)
 				}
-			case pu, ok := <-a.Prices():
-				if !ok {
-					return
-				}
-				r.recordPrice(pu)
 			case err, ok := <-a.Errors():
 				if !ok {
 					return
@@ -200,33 +190,22 @@ func (r *Runner) render() {
 		return
 	}
 	clearScreen()
-	stats := r.master.Stats(sym)
-	lastAge := "n/a"
-	if !stats.LastUpdate.IsZero() {
-		lastAge = time.Since(stats.LastUpdate).Truncate(time.Millisecond).String()
-	}
 	exName := r.primary
 	if exName == "" && len(r.cfg.Exchanges) > 0 {
 		exName = r.cfg.Exchanges[0]
 	}
-	log.Printf("EXCHANGE DOM %s (%s) step=%s levels=%d bids=%d asks=%d last=%s neg=%d", sym, exName, step, r.cfg.GroupLevels, stats.BidLevels, stats.AskLevels, lastAge, stats.NegResidues)
-	if refLine := r.renderRefLine(sym); refLine != "" {
-		log.Printf("%s", refLine)
-	}
-	log.Printf("PRICE | BID | ASK | dBid | dAsk | Buy | Sell | cBid | cAsk | Top5")
+	log.Printf("EXCHANGE DOM %s (%s) step=%s levels=%d", sym, exName, step, r.cfg.GroupLevels)
+	log.Printf("PRICE | BID | ASK | DELTA | BUY | SELL | VOL")
 	for _, row := range rows {
 		price := formatPrice(row, r.cfg.PriceDecimals)
 		bid := r.formatValue(row, row.BidSize)
 		ask := r.formatValue(row, row.AskSize)
-		dbid := r.formatValue(row, row.BidDelta)
-		dask := r.formatValue(row, row.AskDelta)
+		delta := r.formatSumValue(row, row.BidDelta, row.AskDelta)
 		buy := r.formatValue(row, row.BuyVol)
 		sell := r.formatValue(row, row.SellVol)
-		cbid := r.formatValue(row, row.BidCancel)
-		cask := r.formatValue(row, row.AskCancel)
-		top := r.formatTopTrades(row)
-		log.Printf("%s | %s | %s | %s | %s | %s | %s | %s | %s | %s",
-			price, bid, ask, dbid, dask, buy, sell, cbid, cask, top)
+		vol := r.formatSumValue(row, row.BuyVol, row.SellVol)
+		log.Printf("%s | %s | %s | %s | %s | %s | %s",
+			price, bid, ask, delta, buy, sell, vol)
 	}
 	if r.cfg.ValidateSum {
 		if err := r.master.ValidateAggregate(sym); err != nil {
@@ -273,58 +252,6 @@ func applyTicks(master *dom.Master, cfg config.Config) {
 	}
 }
 
-func (r *Runner) recordPrice(pu schema.PriceUpdate) {
-	key := strings.ToLower(pu.Exchange) + ":" + strings.ToUpper(pu.Symbol)
-	r.pricesMu.Lock()
-	r.prices[key] = pu
-	r.pricesMu.Unlock()
-}
-
-func (r *Runner) renderRefLine(sym string) string {
-	ex := r.primary
-	if ex == "" {
-		return ""
-	}
-	key := strings.ToLower(ex) + ":" + strings.ToUpper(sym)
-	r.pricesMu.Lock()
-	pu, ok := r.prices[key]
-	r.pricesMu.Unlock()
-	if !ok {
-		return ""
-	}
-	refTicks := refPriceTicks(pu)
-	if refTicks == 0 {
-		return ""
-	}
-	refStr := dom.FormatFixedTicks(refTicks, baseMul)
-	bid, ask, ok := r.master.BestTicks(sym)
-	if !ok {
-		return "REF " + pu.Source + "=" + refStr + " (domMid=n/a)"
-	}
-	domMid := (bid + ask) / 2
-	domStr := dom.FormatFixedTicks(domMid, baseMul)
-	diff := refTicks - domMid
-	diffBps := 0.0
-	if domMid != 0 {
-		diffBps = (float64(diff) / float64(domMid)) * 10000
-	}
-	return fmt.Sprintf("REF %s=%s domMid=%s diff=%s (%0.2fbps)", pu.Source, refStr, domStr, dom.FormatFixedTicks(diff, baseMul), diffBps)
-}
-
-func refPriceTicks(pu schema.PriceUpdate) int64 {
-	if pu.Price != "" {
-		return dom.ParseFixedTicks(pu.Price, baseMul)
-	}
-	if pu.Bid != "" && pu.Ask != "" {
-		bid := dom.ParseFixedTicks(pu.Bid, baseMul)
-		ask := dom.ParseFixedTicks(pu.Ask, baseMul)
-		if bid > 0 && ask > 0 {
-			return (bid + ask) / 2
-		}
-	}
-	return 0
-}
-
 func formatPrice(row dom.BandRow, decimals int) string {
 	if decimals < 0 {
 		return row.Price
@@ -348,23 +275,15 @@ func (r *Runner) formatValue(row dom.BandRow, value string) string {
 	return formatNotional(row.PriceTicks, sizeTicks, baseMul, baseMul, r.cfg.ValueDecimals)
 }
 
-func (r *Runner) formatTopTrades(row dom.BandRow) string {
-	if len(row.TopTrades) == 0 {
-		return ""
-	}
+func (r *Runner) formatSumValue(row dom.BandRow, a, b string) string {
+	sum := dom.ParseFixedTicks(a, baseMul) + dom.ParseFixedTicks(b, baseMul)
 	if strings.ToLower(strings.TrimSpace(r.cfg.ValueMode)) != "usd" {
-		return strings.Join(row.TopTrades, ",")
+		return dom.FormatFixedTicks(sum, baseMul)
 	}
-	out := make([]string, 0, len(row.TopTrades))
-	for _, v := range row.TopTrades {
-		sizeTicks := dom.ParseFixedTicks(v, baseMul)
-		if sizeTicks == 0 || row.PriceTicks == 0 {
-			out = append(out, "0")
-			continue
-		}
-		out = append(out, formatNotional(row.PriceTicks, sizeTicks, baseMul, baseMul, r.cfg.ValueDecimals))
+	if sum == 0 || row.PriceTicks == 0 {
+		return "0"
 	}
-	return strings.Join(out, ",")
+	return formatNotional(row.PriceTicks, sum, baseMul, baseMul, r.cfg.ValueDecimals)
 }
 
 func convertTicks(v, fromMul, toMul int64) int64 {

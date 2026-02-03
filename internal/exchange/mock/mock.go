@@ -13,7 +13,6 @@ type Adapter struct {
 	name    string
 	symbols []string
 	updates chan schema.L2Update
-	prices  chan schema.PriceUpdate
 	errs    chan error
 	seq     int64
 	mu      sync.Mutex
@@ -24,7 +23,6 @@ func New(name string, symbols []string) *Adapter {
 		name:    name,
 		symbols: symbols,
 		updates: make(chan schema.L2Update, 256),
-		prices:  make(chan schema.PriceUpdate, 256),
 		errs:    make(chan error, 16),
 	}
 }
@@ -68,31 +66,17 @@ func (a *Adapter) FetchSnapshot(ctx context.Context, symbol string) error {
 
 	select {
 	case a.updates <- update:
-		price := schema.PriceUpdate{
-			Exchange:  a.name,
-			Symbol:    symbol,
-			Timestamp: now,
-			RecvTime:  now,
-			Price:     "65000.25",
-			Source:    "mock",
-		}
-		select {
-		case a.prices <- price:
-		default:
-		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (a *Adapter) Updates() <-chan schema.L2Update   { return a.updates }
-func (a *Adapter) Prices() <-chan schema.PriceUpdate { return a.prices }
-func (a *Adapter) Errors() <-chan error              { return a.errs }
+func (a *Adapter) Updates() <-chan schema.L2Update { return a.updates }
+func (a *Adapter) Errors() <-chan error            { return a.errs }
 
 func (a *Adapter) Close() error {
 	close(a.updates)
-	close(a.prices)
 	close(a.errs)
 	return nil
 }

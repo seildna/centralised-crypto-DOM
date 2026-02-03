@@ -16,7 +16,6 @@ import (
 type Adapter struct {
 	symbols  []string
 	updates  chan schema.L2Update
-	prices   chan schema.PriceUpdate
 	errs     chan error
 	ws       *websocket.Conn
 	writeMu  sync.Mutex
@@ -28,7 +27,6 @@ func New(symbols []string, nSigFigs, mantissa int) *Adapter {
 	return &Adapter{
 		symbols:  symbols,
 		updates:  make(chan schema.L2Update, 256),
-		prices:   make(chan schema.PriceUpdate, 256),
 		errs:     make(chan error, 16),
 		nSigFigs: nSigFigs,
 		mantissa: mantissa,
@@ -72,16 +70,6 @@ func (a *Adapter) Subscribe(ctx context.Context, symbols []string) error {
 		if err := a.writeJSON(msg); err != nil {
 			return err
 		}
-		trades := map[string]any{
-			"method": "subscribe",
-			"subscription": map[string]any{
-				"type": "trades",
-				"coin": sym,
-			},
-		}
-		if err := a.writeJSON(trades); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -91,16 +79,14 @@ func (a *Adapter) FetchSnapshot(ctx context.Context, symbol string) error {
 	return nil
 }
 
-func (a *Adapter) Updates() <-chan schema.L2Update   { return a.updates }
-func (a *Adapter) Prices() <-chan schema.PriceUpdate { return a.prices }
-func (a *Adapter) Errors() <-chan error              { return a.errs }
+func (a *Adapter) Updates() <-chan schema.L2Update { return a.updates }
+func (a *Adapter) Errors() <-chan error            { return a.errs }
 
 func (a *Adapter) Close() error {
 	if a.ws != nil {
 		_ = a.ws.Close()
 	}
 	close(a.updates)
-	close(a.prices)
 	close(a.errs)
 	return nil
 }
@@ -148,94 +134,33 @@ func (a *Adapter) readLoop(ctx context.Context) {
 			continue
 		}
 
-		switch env.Channel {
-		case "l2Book":
-			var book wsBook
-			if err := json.Unmarshal(env.Data, &book); err != nil {
-				a.pushErr(fmt.Errorf("decode book: %w", err))
-				continue
-			}
-
-			recv := time.Now().UnixMilli()
-			update := schema.L2Update{
-				Exchange:   a.Name(),
-				Symbol:     book.Coin,
-				Timestamp:  book.Time,
-				RecvTime:   recv,
-				IsSnapshot: true,
-				DepthCap:   20,
-				Bids:       levelsToPriceLevels(book.Levels, 0),
-				Asks:       levelsToPriceLevels(book.Levels, 1),
-			}
-
-			select {
-			case a.updates <- update:
-			case <-ctx.Done():
-				return
-			}
-		case "trades":
-			a.handleTrades(ctx, env.Data)
-		default:
+		if env.Channel != "l2Book" {
 			continue
 		}
-	}
-}
 
-type wsTrade struct {
-	Coin string `json:"coin"`
-	Px   string `json:"px"`
-	Sz   string `json:"sz"`
-	Side string `json:"side"`
-	Time int64  `json:"time"`
-}
-
-type wsTradesWrap struct {
-	Coin   string    `json:"coin"`
-	Trades []wsTrade `json:"trades"`
-}
-
-func (a *Adapter) handleTrades(ctx context.Context, raw json.RawMessage) {
-	var trades []wsTrade
-	if err := json.Unmarshal(raw, &trades); err == nil && len(trades) > 0 {
-		for _, tr := range trades {
-			a.emitTradePrice(ctx, tr, tr.Coin)
+		var book wsBook
+		if err := json.Unmarshal(env.Data, &book); err != nil {
+			a.pushErr(fmt.Errorf("decode book: %w", err))
+			continue
 		}
-		return
-	}
 
-	var wrap wsTradesWrap
-	if err := json.Unmarshal(raw, &wrap); err == nil && len(wrap.Trades) > 0 {
-		for _, tr := range wrap.Trades {
-			coin := tr.Coin
-			if coin == "" {
-				coin = wrap.Coin
-			}
-			a.emitTradePrice(ctx, tr, coin)
+		recv := time.Now().UnixMilli()
+		update := schema.L2Update{
+			Exchange:   a.Name(),
+			Symbol:     book.Coin,
+			Timestamp:  book.Time,
+			RecvTime:   recv,
+			IsSnapshot: true,
+			DepthCap:   20,
+			Bids:       levelsToPriceLevels(book.Levels, 0),
+			Asks:       levelsToPriceLevels(book.Levels, 1),
 		}
-	}
-}
 
-func (a *Adapter) emitTradePrice(ctx context.Context, tr wsTrade, coin string) {
-	if coin == "" || tr.Px == "" {
-		return
-	}
-	now := time.Now().UnixMilli()
-	ts := tr.Time
-	if ts == 0 {
-		ts = now
-	}
-	upd := schema.PriceUpdate{
-		Exchange:  a.Name(),
-		Symbol:    coin,
-		Timestamp: ts,
-		RecvTime:  now,
-		Price:     tr.Px,
-		Source:    "trade",
-	}
-	select {
-	case a.prices <- upd:
-	case <-ctx.Done():
-		return
+		select {
+		case a.updates <- update:
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
