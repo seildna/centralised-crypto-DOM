@@ -26,6 +26,8 @@ type Config struct {
 	RenderIntervalMs    int
 	ValidateSum         bool
 	SingleExchange      bool
+	ValueMode           string
+	ValueDecimals       int
 }
 
 func Load() Config {
@@ -50,6 +52,8 @@ func Load() Config {
 		RenderIntervalMs:    intOrDefault(os.Getenv("DOM_RENDER_MS"), 200),
 		ValidateSum:         boolOrDefault(os.Getenv("DOM_VALIDATE_SUM"), false),
 		SingleExchange:      boolOrDefault(os.Getenv("DOM_SINGLE_EXCHANGE"), true),
+		ValueMode:           stringOrDefault(os.Getenv("DOM_VALUE_MODE"), "size"),
+		ValueDecimals:       intOrDefault(os.Getenv("DOM_VALUE_DECIMALS"), 2),
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -214,10 +215,18 @@ func (r *Runner) render() {
 	}
 	log.Printf("PRICE | BID | ASK | dBid | dAsk | Buy | Sell | cBid | cAsk | Top5")
 	for _, row := range rows {
-		top := strings.Join(row.TopTrades, ",")
 		price := formatPrice(row, r.cfg.PriceDecimals)
+		bid := r.formatValue(row, row.BidSize)
+		ask := r.formatValue(row, row.AskSize)
+		dbid := r.formatValue(row, row.BidDelta)
+		dask := r.formatValue(row, row.AskDelta)
+		buy := r.formatValue(row, row.BuyVol)
+		sell := r.formatValue(row, row.SellVol)
+		cbid := r.formatValue(row, row.BidCancel)
+		cask := r.formatValue(row, row.AskCancel)
+		top := r.formatTopTrades(row)
 		log.Printf("%s | %s | %s | %s | %s | %s | %s | %s | %s | %s",
-			price, row.BidSize, row.AskSize, row.BidDelta, row.AskDelta, row.BuyVol, row.SellVol, row.BidCancel, row.AskCancel, top)
+			price, bid, ask, dbid, dask, buy, sell, cbid, cask, top)
 	}
 	if r.cfg.ValidateSum {
 		if err := r.master.ValidateAggregate(sym); err != nil {
@@ -328,6 +337,36 @@ func formatPrice(row dom.BandRow, decimals int) string {
 	return dom.FormatFixedTicks(scaled, displayMul)
 }
 
+func (r *Runner) formatValue(row dom.BandRow, value string) string {
+	if strings.ToLower(strings.TrimSpace(r.cfg.ValueMode)) != "usd" {
+		return value
+	}
+	sizeTicks := dom.ParseFixedTicks(value, baseMul)
+	if sizeTicks == 0 || row.PriceTicks == 0 {
+		return "0"
+	}
+	return formatNotional(row.PriceTicks, sizeTicks, baseMul, baseMul, r.cfg.ValueDecimals)
+}
+
+func (r *Runner) formatTopTrades(row dom.BandRow) string {
+	if len(row.TopTrades) == 0 {
+		return ""
+	}
+	if strings.ToLower(strings.TrimSpace(r.cfg.ValueMode)) != "usd" {
+		return strings.Join(row.TopTrades, ",")
+	}
+	out := make([]string, 0, len(row.TopTrades))
+	for _, v := range row.TopTrades {
+		sizeTicks := dom.ParseFixedTicks(v, baseMul)
+		if sizeTicks == 0 || row.PriceTicks == 0 {
+			out = append(out, "0")
+			continue
+		}
+		out = append(out, formatNotional(row.PriceTicks, sizeTicks, baseMul, baseMul, r.cfg.ValueDecimals))
+	}
+	return strings.Join(out, ",")
+}
+
 func convertTicks(v, fromMul, toMul int64) int64 {
 	if fromMul == toMul || fromMul == 0 || toMul == 0 {
 		return v
@@ -344,6 +383,32 @@ func convertTicks(v, fromMul, toMul int64) int64 {
 		return v
 	}
 	return v * factor
+}
+
+func formatNotional(priceTicks, sizeTicks, priceMul, sizeMul int64, decimals int) string {
+	if decimals < 0 {
+		decimals = 0
+	}
+	if priceMul <= 0 || sizeMul <= 0 {
+		return "0"
+	}
+	if priceTicks == 0 || sizeTicks == 0 {
+		return "0"
+	}
+	num := new(big.Int).Mul(big.NewInt(priceTicks), big.NewInt(sizeTicks))
+	den := new(big.Int).Mul(big.NewInt(priceMul), big.NewInt(sizeMul))
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	num.Mul(num, scale)
+	quo, rem := new(big.Int).QuoRem(num, den, new(big.Int))
+	intPart := quo.String()
+	if decimals == 0 {
+		return intPart
+	}
+	frac := rem.String()
+	for len(frac) < decimals {
+		frac = "0" + frac
+	}
+	return intPart + "." + frac
 }
 
 func pow10(n int) int64 {

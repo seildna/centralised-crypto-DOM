@@ -28,6 +28,11 @@ DOM_PRICE_DECIMALS=2 \
 go run ./cmd/dom
 ```
 
+Show USD notional for all size columns:
+```bash
+DOM_VALUE_MODE=usd DOM_VALUE_DECIMALS=2 DOM_EXCHANGES=binance DOM_SYMBOLS=BTC go run ./cmd/dom
+```
+
 Run in dry-run mode (mocked data, no exchange access):
 ```bash
 DOM_DRY_RUN=true DOM_EXCHANGES=mock DOM_SYMBOLS=BTC go run ./cmd/dom
@@ -74,6 +79,10 @@ Grouping and precision:
   Min size tick applied to all exchanges.
 - `DOM_SIZE_TICK_BY_EXCHANGE_SYMBOL` (default: empty)  
   Per-exchange override: `binance:BTC:0.00001`.
+- `DOM_VALUE_MODE` (default: `size`)  
+  `size` shows raw size; `usd` converts all size columns to USD notional.
+- `DOM_VALUE_DECIMALS` (default: `2`)  
+  Decimal places for USD notional when `DOM_VALUE_MODE=usd`.
 
 Validation:
 - `DOM_VALIDATE_SUM` (default: `false`)  
@@ -101,13 +110,18 @@ Row example:
 95451.00 | 3.01905 | 7.28615 | 0.50000 | -0.20000 | 0.00000 | 0.00000 | 0.20000 | 0.00000 | 2.00000,1.50000
 ```
 
+USD notional example (with `DOM_VALUE_MODE=usd`):
+```
+95451.00 | 288237.89 | 695585.40 | 47725.50 | -19090.20 | 0.00 | 0.00 | 19090.20 | 0.00 | 190902.00,143176.50
+```
+
 Field meanings:
 - `PRICE` = price band center (grouped by `DOM_GROUP_STEP`).
-- `BID` / `ASK` = aggregated size at that band.
-- `dBid` / `dAsk` = delta since last render.
-- `Buy` / `Sell` = trade volume per band (when available).
-- `cBid` / `cAsk` = cancel volume per band.
-- `Top5` = top 5 trade sizes per band (when available).
+- `BID` / `ASK` = aggregated size at that band (or USD notional when `DOM_VALUE_MODE=usd`).
+- `dBid` / `dAsk` = delta since last render (size or USD).
+- `Buy` / `Sell` = trade volume per band (size or USD).
+- `cBid` / `cAsk` = cancel volume per band (size or USD).
+- `Top5` = top 5 trade sizes per band (size or USD).
 - `REF` line compares exchange reference price vs DOM mid; a large diff indicates drift.
 
 ---
