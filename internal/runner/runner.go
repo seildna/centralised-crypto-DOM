@@ -196,17 +196,18 @@ func (r *Runner) render() {
 		return
 	}
 	rows := r.master.CenteredBands(sym, groupTicks, r.cfg.GroupLevels)
-	if len(rows) == 0 {
-		return
-	}
 	clearScreen()
 	exName := r.primary
 	if exName == "" && len(r.cfg.Exchanges) > 0 {
 		exName = r.cfg.Exchanges[0]
 	}
 	log.Printf("EXCHANGE DOM %s (%s) step=%s levels=%d", sym, exName, step, r.cfg.GroupLevels)
-	log.Printf("PRICE | BID | ASK | DELTA | BUY | SELL | VOL")
+	log.Printf("%s", r.renderHeaderLine())
 	r.writeSnapshot(sym, exName, step, rows)
+	if len(rows) == 0 {
+		log.Printf("waiting for trades...")
+		return
+	}
 	for _, row := range rows {
 		price := formatPrice(row, r.cfg.PriceDecimals)
 		bid := r.formatValue(row, row.BidSize)
@@ -215,8 +216,7 @@ func (r *Runner) render() {
 		buy := r.formatValue(row, row.BuyVol)
 		sell := r.formatValue(row, row.SellVol)
 		vol := r.formatSumValue(row, row.BuyVol, row.SellVol)
-		log.Printf("%s | %s | %s | %s | %s | %s | %s",
-			price, bid, ask, delta, buy, sell, vol)
+		log.Printf("%s", r.renderRowLine(price, bid, ask, delta, buy, sell, vol))
 	}
 	if r.cfg.ValidateSum {
 		if err := r.master.ValidateAggregate(sym); err != nil {
@@ -258,7 +258,7 @@ func (r *Runner) writeSnapshot(sym, exName, step string, rows []dom.BandRow) {
 	defer file.Close()
 
 	_, _ = file.WriteString("EXCHANGE DOM " + sym + " (" + exName + ") step=" + step + " levels=" + itoa(r.cfg.GroupLevels) + "\n")
-	_, _ = file.WriteString("PRICE | BID | ASK | DELTA | BUY | SELL | VOL\n")
+	_, _ = file.WriteString(r.renderHeaderLine() + "\n")
 	for _, row := range rows {
 		price := formatPrice(row, r.cfg.PriceDecimals)
 		bid := r.formatValue(row, row.BidSize)
@@ -267,8 +267,11 @@ func (r *Runner) writeSnapshot(sym, exName, step string, rows []dom.BandRow) {
 		buy := r.formatValue(row, row.BuyVol)
 		sell := r.formatValue(row, row.SellVol)
 		vol := r.formatSumValue(row, row.BuyVol, row.SellVol)
-		line := price + " | " + bid + " | " + ask + " | " + delta + " | " + buy + " | " + sell + " | " + vol + "\n"
+		line := r.renderRowLine(price, bid, ask, delta, buy, sell, vol) + "\n"
 		_, _ = file.WriteString(line)
+	}
+	if len(rows) == 0 {
+		_, _ = file.WriteString("waiting for trades...\n")
 	}
 }
 
@@ -340,24 +343,67 @@ func formatPrice(row dom.BandRow, decimals int) string {
 
 func (r *Runner) formatValue(row dom.BandRow, value string) string {
 	if strings.ToLower(strings.TrimSpace(r.cfg.ValueMode)) != "usd" {
-		return value
+		return formatCompact(value)
 	}
 	sizeTicks := dom.ParseFixedTicks(value, baseMul)
 	if sizeTicks == 0 || row.PriceTicks == 0 {
 		return "0"
 	}
-	return formatNotional(row.PriceTicks, sizeTicks, baseMul, baseMul, r.cfg.ValueDecimals)
+	return formatCompact(formatNotional(row.PriceTicks, sizeTicks, baseMul, baseMul, r.cfg.ValueDecimals))
 }
 
 func (r *Runner) formatSumValue(row dom.BandRow, a, b string) string {
 	sum := dom.ParseFixedTicks(a, baseMul) + dom.ParseFixedTicks(b, baseMul)
 	if strings.ToLower(strings.TrimSpace(r.cfg.ValueMode)) != "usd" {
-		return dom.FormatFixedTicks(sum, baseMul)
+		return formatCompact(dom.FormatFixedTicks(sum, baseMul))
 	}
 	if sum == 0 || row.PriceTicks == 0 {
 		return "0"
 	}
-	return formatNotional(row.PriceTicks, sum, baseMul, baseMul, r.cfg.ValueDecimals)
+	return formatCompact(formatNotional(row.PriceTicks, sum, baseMul, baseMul, r.cfg.ValueDecimals))
+}
+
+func (r *Runner) renderHeaderLine() string {
+	return padCenter("PRICE", 12) + " | " +
+		padCenter("BID", 12) + " | " +
+		padCenter("ASK", 12) + " | " +
+		padCenter("DELTA", 12) + " | " +
+		padCenter("BUY", 12) + " | " +
+		padCenter("SELL", 12) + " | " +
+		padCenter("VOL", 12)
+}
+
+func (r *Runner) renderRowLine(price, bid, ask, delta, buy, sell, vol string) string {
+	return padLeft(price, 12) + " | " +
+		padLeft(bid, 12) + " | " +
+		padLeft(ask, 12) + " | " +
+		padLeft(delta, 12) + " | " +
+		padLeft(buy, 12) + " | " +
+		padLeft(sell, 12) + " | " +
+		padLeft(vol, 12)
+}
+
+func padLeft(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	if len(s) >= width {
+		return s
+	}
+	return strings.Repeat(" ", width-len(s)) + s
+}
+
+func padCenter(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	if len(s) >= width {
+		return s
+	}
+	pad := width - len(s)
+	left := pad / 2
+	right := pad - left
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", right)
 }
 
 func convertTicks(v, fromMul, toMul int64) int64 {
@@ -402,6 +448,84 @@ func formatNotional(priceTicks, sizeTicks, priceMul, sizeMul int64, decimals int
 		frac = "0" + frac
 	}
 	return intPart + "." + frac
+}
+
+func formatCompact(value string) string {
+	v := strings.TrimSpace(value)
+	if v == "" || v == "0" || v == "0.0" || v == "0.00" {
+		return "0"
+	}
+	neg := false
+	if strings.HasPrefix(v, "-") {
+		neg = true
+		v = strings.TrimPrefix(v, "-")
+	}
+	intPart := v
+	fracPart := ""
+	if dot := strings.IndexByte(v, '.'); dot >= 0 {
+		intPart = v[:dot]
+		if dot+1 < len(v) {
+			fracPart = v[dot+1:]
+		}
+	}
+	intPart = strings.TrimLeft(intPart, "0")
+	if intPart == "" {
+		intPart = "0"
+	}
+	mag := len(intPart) - 1
+	unit := ""
+	shift := 0
+	switch {
+	case mag >= 9:
+		unit = "b"
+		shift = 9
+	case mag >= 6:
+		unit = "m"
+		shift = 6
+	case mag >= 3:
+		unit = "k"
+		shift = 3
+	default:
+		shift = 0
+	}
+	if shift == 0 {
+		out := intPart
+		if fracPart != "" {
+			out += "." + trimRightZeros(fracPart)
+		}
+		if neg {
+			return "-" + out
+		}
+		return out
+	}
+	if len(intPart) <= shift {
+		intPart = strings.Repeat("0", shift-len(intPart)+1) + intPart
+	}
+	cut := len(intPart) - shift
+	whole := intPart[:cut]
+	dec := intPart[cut:]
+	if fracPart != "" {
+		dec += fracPart
+	}
+	dec = trimRightZeros(dec)
+	if len(dec) > 2 {
+		dec = dec[:2]
+	}
+	out := whole
+	if dec != "" {
+		out += "." + dec
+	}
+	out += unit
+	if neg {
+		return "-" + out
+	}
+	return out
+}
+
+func trimRightZeros(s string) string {
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	return s
 }
 
 func pow10(n int) int64 {
